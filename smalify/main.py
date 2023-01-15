@@ -26,6 +26,7 @@ import sys
 sys.path.append(os.path.abspath(os.getcwd()))
 import smplx_smal
 import cv2
+import numpy as np
 from cmd_parser import parse_config
 from data_parser import create_dataset
 from fit_single_frame import fit_single_frame
@@ -49,7 +50,7 @@ def main(**args):
     body_model = smplx_smal.create(**model_params)
     cameras = []
     num_cameras = len(dataset_obj[0]["cam_names"][0])
-    for el in range(num_cameras):
+    for _ in range(num_cameras):
         camera = create_camera(focal_length_x=args['focal_length'],
                                focal_length_y=args['focal_length'],
                                **args)
@@ -63,42 +64,68 @@ def main(**args):
         **args)
     angle_prior = create_prior(prior_type='angle', dtype=args['dtype'])
     cam_pose_prior = create_prior(prior_type=args.get('cam_prior_type', 'l2'),**args)
-    for idx, data in enumerate(dataset_obj):
-        imgs = data['imgs'][0]
-        keypoints = data['keypoints'][0]
-        cam_poses = data['cam_poses'][0]
-        img_scaled_w = 1280
-        img_scaling_factor = imgs[0].shape[1] / img_scaled_w
-        img_scaled_h = round(imgs[0].shape[0] / img_scaling_factor)
 
-        
+    use_median_betas = args.get('use_median_betas', False)
+    if use_median_betas:
+        visualize = args.get('visualize', False)
+        args['visualize'] = False
+        all_betas = []
 
-        for i, _ in enumerate(imgs):
-            imgs[i] = cv2.resize(imgs[i], dsize=(img_scaled_w, img_scaled_h), interpolation=cv2.INTER_CUBIC)
-            keypoints[i][0][:,:2] = keypoints[i][0][:,:2] / img_scaling_factor
-        snapshot_name = data['snapshot_name']
-        #if int(data['snapshot_name'])<36490:
-        #    continue
-        curr_image_folder = osp.join(output_folder, "images/", snapshot_name)
-        print('Processing: {}'.format(snapshot_name))
-        if not osp.exists(result_folder):
-            os.makedirs(result_folder)
-        if not osp.exists(mesh_folder):
-            os.makedirs(mesh_folder)
-        if not osp.exists(curr_image_folder):
-            os.makedirs(curr_image_folder)
+    for fix_betas in range(1+use_median_betas):
+        if fix_betas:
+            betas = torch.tensor(np.median(all_betas, axis=0))
+            args['visualize'] = visualize
+            dataset_obj = create_dataset(**args)
 
-        fit_single_frame(imgs, keypoints, cam_poses,
-                         body_model=body_model,
-                         cameras=cameras,
-                         snapshot_name=snapshot_name,
-                         output_dir=output_folder,
-                         shape_prior=shape_prior,
-                         body_pose_prior=body_pose_prior,
-                         angle_prior=angle_prior,
-                         cam_pose_prior=cam_pose_prior,
-                         betas=betas,
-                         **args)
+        losses = []
+        prev_params = None
+        for _, data in enumerate(dataset_obj):
+            imgs = data['imgs'][0]
+            keypoints = data['keypoints'][0]
+            cam_poses = data['cam_poses'][0]
+            img_scaled_w = 1280
+            img_scaling_factor = imgs[0].shape[1] / img_scaled_w
+            img_scaled_h = round(imgs[0].shape[0] / img_scaling_factor)
+
+            for i, _ in enumerate(imgs):
+                imgs[i] = cv2.resize(imgs[i], dsize=(img_scaled_w, img_scaled_h), interpolation=cv2.INTER_CUBIC)
+                keypoints[i][0][:,:2] = keypoints[i][0][:,:2] / img_scaling_factor
+            snapshot_name = data['snapshot_name']
+            curr_image_folder = osp.join(output_folder, "images/", snapshot_name)
+            print('Processing: {}'.format(snapshot_name))
+            if not osp.exists(result_folder):
+                os.makedirs(result_folder)
+            if not osp.exists(mesh_folder):
+                os.makedirs(mesh_folder)
+            if not osp.exists(curr_image_folder):
+                os.makedirs(curr_image_folder)
+
+            results = fit_single_frame(imgs, keypoints, cam_poses,
+                            body_model=body_model,
+                            cameras=cameras,
+                            snapshot_name=snapshot_name,
+                            output_dir=output_folder,
+                            shape_prior=shape_prior,
+                            body_pose_prior=body_pose_prior,
+                            angle_prior=angle_prior,
+                            cam_pose_prior=cam_pose_prior,
+                            betas=betas,
+                            init_params=prev_params,
+                            fix_betas=fix_betas,
+                            **args)
+            losses.append(results[0]['loss'])
+
+            if args.get('init_prev'):
+                assert len(results) <= 1, 'Can not use init_prev with more than a single subject'
+                if results:
+                    prev_params = results[0]['result']
+                else:
+                    prev_params = None
+
+            if not fix_betas and use_median_betas:
+                all_betas.append(prev_params['betas'])
+
+        print(f'Mean loss: {np.mean(losses):.3e}')
                          
     elapsed = time.time() - start
     time_msg = time.strftime('%H hours, %M minutes, %S seconds',time.gmtime(elapsed))

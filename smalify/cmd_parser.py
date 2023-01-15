@@ -288,6 +288,12 @@ def parse_config(argv=None):
     parser.add_argument('--yaw_only', default=False,
                         type=lambda arg: arg.lower() in ['true', '1'],
                         help='Use the VAE pose embedding')
+    parser.add_argument('--init_prev', default=False,
+                        type=lambda arg: arg.lower() in ['true', '1'],
+                        help='Initialize parameters from previous frame. Only valid with a single subject')
+    parser.add_argument('--use_median_betas', default=False,
+                        type=lambda arg: arg.lower() in ['true', '1'],
+                        help='Take a first pass over dataset to learn betas then fix them to the median')
 
     args = parser.parse_args(argv)
 

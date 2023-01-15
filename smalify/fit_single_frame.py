@@ -65,13 +65,20 @@ def fit_single_frame(imgs,
                      interactive=True,
                      visualize=False,
                      dtype=torch.float32,
+                     init_params=None,
+                     fix_betas=False,
                      **kwargs):
     #assert batch_size == 1, 'PyTorch L-BFGS only supports batch_size == 1'
     yaw_only = kwargs.get('yaw_only', False)
     device = torch.device('cuda') if use_cuda else torch.device('cpu')
     use_vposer = kwargs.get('use_vposer', True)
     vposer, pose_embedding = [None, ] * 2
-    body_mean_pose = np.load('smalify/walking_toy_symmetric_35parts_mean_pose.npz')['mean_pose'][3:]
+    if init_params is None:
+        body_mean_pose = np.load('smalify/walking_toy_symmetric_35parts_mean_pose.npz')['mean_pose'][3:]
+        yaw_init = 2
+    else:
+        body_mean_pose = init_params['body_pose']
+        yaw_init = init_params['yaw']    
 
     keypoint_data = torch.tensor(keypoints, dtype=dtype)
     gt_joints = keypoint_data[:,:, :, :2]
@@ -106,8 +113,7 @@ def fit_single_frame(imgs,
         H, W, _ = imgs[0].shape
         data_weight = 650 / W
         camera_loss.reset_loss_weights({'data_weight': data_weight})
-        betas = betas.tolist()
-        body_model.reset_params(body_pose=body_mean_pose, betas=betas, yaw=torch.Tensor([2]))#, yaw=yaw_init)
+        body_model.reset_params(body_pose=body_mean_pose, betas=betas, yaw=yaw_init)
         
         with torch.no_grad():
             if not yaw_only:
@@ -209,6 +215,9 @@ def fit_single_frame(imgs,
             else:
                 body_model.body_pose.requires_grad = True
 
+            if fix_betas:
+                body_model.betas.requires_grad = False
+
             body_params = list(body_model.parameters())
 
             final_params = list(
@@ -233,7 +242,6 @@ def fit_single_frame(imgs,
             if interactive:
                 stage_start = time.time()
 
-            print(opt_idx, curr_weights)
             final_loss_val = monitor.run_fitting(
                 body_optimizer,
                 closure, final_params,
@@ -259,13 +267,14 @@ def fit_single_frame(imgs,
         results.append({'loss': final_loss_val,
                         'result': result})
 
-        '''with open(result_fn, 'wb') as result_file:
+        result_fn = osp.join(output_dir,'meshes/'+snapshot_name+'.pkl')
+        with open(result_fn, 'wb') as result_file:
             if len(results) > 1:
                 min_idx = (0 if results[0]['loss'] < results[1]['loss']
                            else 1)
             else:
                 min_idx = 0
-            pickle.dump(results[min_idx]['result'], result_file, protocol=2)'''
+            pickle.dump(results[min_idx]['result'], result_file, protocol=2)
 
     if save_meshes or visualize:
         body_pose = (vposer.decode(pose_embedding).get( 'pose_body')).reshape(1, -1) if use_vposer else None
@@ -338,6 +347,7 @@ def fit_single_frame(imgs,
             image_dir = osp.join(output_dir, "images/",snapshot_name+"/")
             plt.savefig(osp.join(image_dir,str(camera_index)+'_keypoints.png'),bbox_inches='tight', dpi=387.1, pad_inches=0)
         print('Took ', time.time()-vis_start, 'for the visualisation stage')
+    return results
 
 def log_to_smalify(translation,rotation_euler):
     return (torch.Tensor([translation[1],translation[2],translation[0]]), torch.Tensor([rotation_euler[2],rotation_euler[1], rotation_euler[0]]))
